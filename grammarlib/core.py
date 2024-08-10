@@ -1,22 +1,22 @@
-from typing import List, Dict, Set, Callable, Any, Optional, Union, Type, Tuple
+from typing import Iterable, List, Dict, Set, Callable, Any, Optional, Union, Type, Tuple
 from dataclasses import dataclass
 
 
-Production = Tuple["Symbol", ...]
+Expansion = Tuple["Symbol", ...]
 
 
 class Symbol:
-    def __mul__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+    def __mul__(self, other: Union["Symbol", "ExpansionAlternatives"]) -> "ExpansionAlternatives":
         if isinstance(other, Symbol):
-            return ProductionList([(self, other)])
+            return ExpansionAlternatives([(self, other)])
         else:
-            return ProductionList([ (self, *production) for production in other.productions ])
+            return ExpansionAlternatives([ (self, *expansion) for expansion in other.expansions ])
 
-    def __or__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+    def __or__(self, other: Union["Symbol", "ExpansionAlternatives"]) -> "ExpansionAlternatives":
         if isinstance(other, Symbol):
-            return ProductionList([(self,), (other,)])
+            return ExpansionAlternatives([(self,), (other,)])
         else:
-            return ProductionList([ (self,), *other.productions ])
+            return ExpansionAlternatives([ (self,), *other.expansions ])
 
 
 @dataclass(frozen=True)
@@ -29,32 +29,37 @@ class Terminal(Symbol):
 
 
 @dataclass(frozen=True)
-class ProductionList:
-    productions: List[Production]
+class ExpansionAlternatives:
+    expansions: Iterable[Expansion]
 
-    def add(self, production: Production):
-        self.productions.append(production)
-
-    def __mul__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+    def __mul__(self, other: Union["Symbol", "ExpansionAlternatives"]) -> "ExpansionAlternatives":
         if isinstance(other, Symbol):
-            return ProductionList([ (*sp, other) for sp in self.productions ])
+            return ExpansionAlternatives([ (*se, other) for se in self.expansions ])
         else:
-            return ProductionList([ (*sp, *op) for sp in self.productions for op in other.productions ])
+            return ExpansionAlternatives([ (*se, *oe) for se in self.expansions for oe in other.expansions ])
 
-    def __or__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+    def __or__(self, other: Union["Symbol", "ExpansionAlternatives"]) -> "ExpansionAlternatives":
         if isinstance(other, Symbol):
-            return ProductionList([*self.productions, (other,)])
+            return ExpansionAlternatives([*self.expansions, (other,)])
         else:
-            return ProductionList([ *self.productions, *other.productions ])
+            return ExpansionAlternatives([ *self.expansions, *other.expansions ])
+
+
+def never() -> ExpansionAlternatives:
+    return ExpansionAlternatives([])
+
+
+def epsilon() -> ExpansionAlternatives:
+    return ExpansionAlternatives([tuple()])
 
 
 class NonTerminal(Symbol):
     label: str
-    production_list: ProductionList
+    alternatives: ExpansionAlternatives
 
-    def __init__(self, *, label: str, production_list: ProductionList):
+    def __init__(self, *, label: str, alternatives: ExpansionAlternatives):
         self.label = label
-        self.production_list = production_list
+        self.alternatives = alternatives
 
     def __str__(self):
         return "<" + self.label + ">"
@@ -63,8 +68,8 @@ class NonTerminal(Symbol):
         if self.label is not None:
             return f"NonTerminal(label={repr(self.label)})"
 
-    def add_production(self, production: Production):
-        self.production_list.add(production)
+    def add_expansion(self, alternative: ExpansionAlternatives):
+        self.alternatives = self.alternatives | alternative
 
 
 class Grammar:
@@ -80,10 +85,10 @@ class Grammar:
         if non_terminal in self.non_terminals:
             return
         self.non_terminals.add(non_terminal)
-        for production in non_terminal.production_list.productions:
-            for term in production:
-                if isinstance(term, NonTerminal):
-                    self._add_non_terminal(term)
+        for expansion in non_terminal.alternatives.expansions:
+            for symbol in expansion:
+                if isinstance(symbol, NonTerminal):
+                    self._add_non_terminal(symbol)
 
     def first_sets(self) -> Dict[NonTerminal, Set[Optional[Terminal]]]:
         result: Dict[NonTerminal, Set[Optional[Terminal]]] = {}
@@ -96,20 +101,20 @@ class Grammar:
             changed = False
 
             for non_terminal in self.non_terminals:
-                for production in non_terminal.production_list.productions:
+                for expansion in non_terminal.alternatives.expansions:
                     can_be_empty = True
-                    for term in production:
-                        first_set_of_term = set()
-                        if isinstance(term, NonTerminal):
-                            first_set_of_term = result[term]
-                        elif isinstance(term, Terminal):
-                            first_set_of_term = {term}
+                    for symbol in expansion:
+                        first_set_of_symbol = set()
+                        if isinstance(symbol, NonTerminal):
+                            first_set_of_symbol = result[symbol]
+                        elif isinstance(symbol, Terminal):
+                            first_set_of_symbol = {symbol}
 
-                        if not first_set_of_term.issubset(result[non_terminal]):
-                            result[non_terminal] = result[non_terminal].union(first_set_of_term)
+                        if not first_set_of_symbol.issubset(result[non_terminal]):
+                            result[non_terminal] = result[non_terminal].union(first_set_of_symbol)
                             changed = True
 
-                        if not (None in first_set_of_term):
+                        if not (None in first_set_of_symbol):
                             can_be_empty = False
                             break
 
@@ -132,37 +137,40 @@ class Grammar:
             changed = False
 
             for non_terminal in self.non_terminals:
-                for production in non_terminal.production_list.productions:
+                for expansion in non_terminal.alternatives.expansions:
                     current_follow_set = result[non_terminal]
 
-                    for term in reversed(production):
-                        if isinstance(term, Terminal):
-                            current_follow_set = {term}
-                        elif isinstance(term, NonTerminal):
-                            if not current_follow_set.issubset(result[term]):
-                                result[term] = result[term].union(current_follow_set)
+                    for symbol in reversed(expansion):
+                        if isinstance(symbol, Terminal):
+                            current_follow_set = {symbol}
+                        elif isinstance(symbol, NonTerminal):
+                            if not current_follow_set.issubset(result[symbol]):
+                                result[symbol] = result[symbol].union(current_follow_set)
                                 changed = True
-                            if None in first_sets[term]:
-                                copy_of_first_set = set(first_sets[term])
+                            if None in first_sets[symbol]:
+                                copy_of_first_set = set(first_sets[symbol])
                                 copy_of_first_set.remove(None)
                                 current_follow_set = current_follow_set.union(copy_of_first_set)
                             else:
-                                current_follow_set = first_sets[term]
+                                current_follow_set = first_sets[symbol]
 
         return result
 
     def show(self) -> str:
         result: List[str] = []
         for non_terminal in self.non_terminals:
-            for production in non_terminal.production_list.productions:
-                result.append(str(non_terminal) + " <- " + " ".join((str(s) for s in production)) + "\n")
+            for expansion in non_terminal.alternatives.expansions:
+                result.append(str(non_terminal) + " <- " + " ".join((str(s) for s in expansion)) + "\n")
         return "".join(result)
 
 
-def nt(label: str, productions: Optional[Union[Symbol, ProductionList]] = None):
-    if isinstance(productions, Symbol):
-        return NonTerminal(label = label, production_list = ProductionList([(productions,)]))
-    return NonTerminal(label = label, production_list = productions or ProductionList([]))
+def nt(label: str, expansions: Optional[Union[Symbol, ExpansionAlternatives]] = None):
+    if expansions is None:
+        return NonTerminal(label = label, alternatives = never())
+    elif isinstance(expansions, Symbol):
+        return NonTerminal(label = label, alternatives = ExpansionAlternatives([(expansions,)]))
+    else:
+        return NonTerminal(label = label, alternatives = expansions)
 
 
 def _main():
