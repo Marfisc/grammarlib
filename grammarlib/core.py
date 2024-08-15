@@ -1,61 +1,70 @@
-from typing import List, Dict, Set, Callable, Any, Optional, Union, Type
+from typing import List, Dict, Set, Callable, Any, Optional, Union, Type, Tuple
 from dataclasses import dataclass
 
 
-Terminal = str
-TermList = List[Union["NonTerminal", "Capture", Terminal]]
+Production = Tuple["Symbol", ...]
 
 
-@dataclass
-class Production:
-    terms: TermList
+class Symbol:
+    def __mul__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+        if isinstance(other, Symbol):
+            return ProductionList([(self, other)])
+        else:
+            return ProductionList([ (self, *production) for production in other.productions ])
+
+    def __or__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+        if isinstance(other, Symbol):
+            return ProductionList([(self,), (other,)])
+        else:
+            return ProductionList([ (self,), *other.productions ])
 
 
-@dataclass
-class Capture:
-    non_termnial: "NonTerminal"
-    variable: str
+@dataclass(frozen=True)
+class Terminal(Symbol):
+    text: str
+
+    def __str__(self):
+        return '"' + self.text + '"'
 
 
-class NonTerminal:
 
-    def __init__(self, func: Optional[Callable[["NonTerminal"], Any]] = None, *, label: Optional[str] = None):
-        # if func is None and label is None:
-        #    raise ValueError("Cannot leave out func and label")
+@dataclass(frozen=True)
+class ProductionList:
+    productions: List[Production]
 
-        self.func: Optional[Callable[["NonTerminal"], Any]] = func
-        self.label: Optional[str]  = label
-        self.productions: List[Production] = []
-        self.built: bool = False
+    def add(self, production: Production):
+        self.productions.append(production)
 
-        if self.label is None:
-            if hasattr(func, "__name__"):
-                self.label = func.__name__ #type: ignore
+    def __mul__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+        if isinstance(other, Symbol):
+            return ProductionList([ (*sp, other) for sp in self.productions ])
+        else:
+            return ProductionList([ (*sp, *op) for sp in self.productions for op in other.productions ])
 
-    def __call__(self, func: Callable[["NonTerminal"], Any]):
-        if self.func is not None:
-            raise ValueError("Func is already set")
-        self.func = func
+    def __or__(self, other: Union["Symbol", "ProductionList"]) -> "ProductionList":
+        if isinstance(other, Symbol):
+            return ProductionList([*self.productions, (other,)])
+        else:
+            return ProductionList([ *self.productions, *other.productions ])
 
-        if self.label is None:
-            if hasattr(func, "func_name"):
-                self.label = func.func_name #type: ignore
-        return self
+
+class NonTerminal(Symbol):
+    label: str
+    production_list: ProductionList
+
+    def __init__(self, *, label: str, production_list: ProductionList):
+        self.label = label
+        self.production_list = production_list
+
+    def __str__(self):
+        return "<" + self.label + ">"
 
     def __repr__(self):
         if self.label is not None:
             return f"NonTerminal(label={repr(self.label)})"
 
-    def build(self):
-        if self.built:
-            return
-        if self.func is None:
-            raise ValueError("NonTerminal missing function to create productions")
-        self.built = True
-        self.func(self)
-
-    def add_production(self, *terms: Union[str, "NonTerminal", "Capture", Terminal]):
-        self.productions.append(Production(list(terms)))
+    def add_production(self, production: Production):
+        self.production_list.add(production)
 
 
 class Grammar:
@@ -67,13 +76,12 @@ class Grammar:
         self.non_terminals = set()
         self._add_non_terminal(starting_non_terminal)
 
-    def _add_non_terminal(self, non_termnial: NonTerminal):
-        if non_termnial in self.non_terminals:
+    def _add_non_terminal(self, non_terminal: NonTerminal):
+        if non_terminal in self.non_terminals:
             return
-        self.non_terminals.add(non_termnial)
-        non_termnial.build()
-        for production in non_termnial.productions:
-            for term in production.terms:
+        self.non_terminals.add(non_terminal)
+        for production in non_terminal.production_list.productions:
+            for term in production:
                 if isinstance(term, NonTerminal):
                     self._add_non_terminal(term)
 
@@ -88,9 +96,9 @@ class Grammar:
             changed = False
 
             for non_terminal in self.non_terminals:
-                for production in non_terminal.productions:
+                for production in non_terminal.production_list.productions:
                     can_be_empty = True
-                    for term in production.terms:
+                    for term in production:
                         first_set_of_term = set()
                         if isinstance(term, NonTerminal):
                             first_set_of_term = result[term]
@@ -124,10 +132,10 @@ class Grammar:
             changed = False
 
             for non_terminal in self.non_terminals:
-                for production in non_terminal.productions:
+                for production in non_terminal.production_list.productions:
                     current_follow_set = result[non_terminal]
 
-                    for term in reversed(production.terms):
+                    for term in reversed(production):
                         if isinstance(term, Terminal):
                             current_follow_set = {term}
                         elif isinstance(term, NonTerminal):
@@ -143,26 +151,30 @@ class Grammar:
 
         return result
 
+    def show(self) -> str:
+        result: List[str] = []
+        for non_terminal in self.non_terminals:
+            for production in non_terminal.production_list.productions:
+                result.append(str(non_terminal) + " <- " + " ".join((str(s) for s in production)) + "\n")
+        return "".join(result)
+
+
+def nt(label: str, productions: Optional[Union[Symbol, ProductionList]] = None):
+    if isinstance(productions, Symbol):
+        return NonTerminal(label = label, production_list = ProductionList([(productions,)]))
+    return NonTerminal(label = label, production_list = productions or ProductionList([]))
+
 
 def _main():
-    @NonTerminal
-    def f(nt):
-        nt.add_production("abc")
-        nt.add_production(q, "def")
-        nt.add_production(q, q, "def")
-        nt.add_production(q, "following")
-
-        print(repr(nt.productions))
-        pass
-
-    @NonTerminal(label="qqq")
-    def q(nt):
-        nt.add_production("qux")
-        nt.add_production()
-        pass
-
-    print(f.label)
-    print(q.label)
+    ta = Terminal("a")
+    tb = Terminal("b")
+    a = nt("A", ta)
+    b = nt("B", tb)
+    d = nt("D", (a | b) * (a | b))
+    c = nt("C", a | a * b | d * tb)
+    g = Grammar(c)
+    print(g.show())
+    print(g.follow_sets())
 
 
 if __name__ == "__main__":
