@@ -1,4 +1,5 @@
-from typing import Iterable, List, Dict, Set, Callable, Any, Optional, Union, Type, Tuple
+import functools
+from typing import Iterable, List, Dict, Set, Callable, Any, Optional, Union, Tuple, cast, overload
 from dataclasses import dataclass
 
 
@@ -27,7 +28,6 @@ class Terminal(Symbol):
         return '"' + self.text + '"'
 
 
-
 @dataclass(frozen=True)
 class ExpansionAlternatives:
     expansions: Iterable[Expansion]
@@ -54,19 +54,18 @@ def epsilon() -> ExpansionAlternatives:
 
 
 class NonTerminal(Symbol):
-    label: str
+    label: str | None
     alternatives: ExpansionAlternatives
 
-    def __init__(self, *, label: str, alternatives: ExpansionAlternatives):
+    def __init__(self, *, label: str | None, alternatives: ExpansionAlternatives):
         self.label = label
         self.alternatives = alternatives
 
     def __str__(self):
-        return "<" + self.label + ">"
+        return self.label or "unnamed"
 
     def __repr__(self):
-        if self.label is not None:
-            return f"NonTerminal(label={repr(self.label)})"
+        return f"NonTerminal(label={repr(self.label)})"
 
     def add_expansion(self, alternative: ExpansionAlternatives):
         self.alternatives = self.alternatives | alternative
@@ -164,25 +163,61 @@ class Grammar:
         return "".join(result)
 
 
-def nt(label: str, expansions: Optional[Union[Symbol, ExpansionAlternatives]] = None):
-    if expansions is None:
-        return NonTerminal(label = label, alternatives = never())
-    elif isinstance(expansions, Symbol):
-        return NonTerminal(label = label, alternatives = ExpansionAlternatives([(expansions,)]))
+@overload
+def nt(label: str, expansions: Symbol | ExpansionAlternatives) -> NonTerminal: ...
+
+@overload
+def nt(expansions: Symbol | ExpansionAlternatives, /) -> NonTerminal: ...
+
+def nt(label: str | Symbol | ExpansionAlternatives, expansions: Symbol | ExpansionAlternatives | None = None) -> NonTerminal:
+    if isinstance(label, str) and expansions is not None:
+        return NonTerminal(label = label, alternatives = epsilon() * expansions)
+    elif not isinstance(label, str):
+        return NonTerminal(label = None, alternatives = epsilon() * label)
     else:
-        return NonTerminal(label = label, alternatives = expansions)
+        raise ValueError("nt: Provide either label and expansion or just expansion")
+
+
+def parametric_nt[**P](f: Callable[P, NonTerminal]) -> Callable[P, NonTerminal]:
+    @functools.wraps(f)
+    def result(*args: P.args, **kwargs: P.kwargs) -> NonTerminal:
+        inner_result = f(*args, **kwargs)
+        if inner_result.label is None:
+            inner_result.label = f.__name__
+        inner_result.label += '(' + ', '.join(map(repr, args)) + ')'
+        return inner_result
+    return cast(Callable[P, NonTerminal], functools.cache(result))
+
+
+def label_nts(variables: Dict[str, Any]) -> Dict[str, NonTerminal]:
+    for k, v in variables.items():
+        if isinstance(v, NonTerminal) and v.label is None:
+            v.label = k
+    return {}
+
+
+def t(text: str):
+    return Terminal(text)
 
 
 def _main():
-    ta = Terminal("a")
-    tb = Terminal("b")
-    a = nt("A", ta)
+    @parametric_nt
+    def pnt(x: int) -> NonTerminal:
+        if x <= 0:
+            return nt(t("a"))
+        return nt(pnt(x - 1) * t("x"))
+
+    ta = t("a")
+    tb = t("b")
+    a = nt(ta)
     b = nt("B", tb)
-    d = nt("D", (a | b) * (a | b))
-    c = nt("C", a | a * b | d * tb)
+    d = nt((a | b) * (a | b))
+    c = nt(a | a * b | d * tb | pnt(3))
+    label_nts(vars())
     g = Grammar(c)
     print(g.show())
-    print(g.follow_sets())
+    for sym, follow_set in g.follow_sets().items():
+        print(f"{sym} [{', '.join(map(str, follow_set))}]")
 
 
 if __name__ == "__main__":
